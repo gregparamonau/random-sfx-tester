@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound Scheduler</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --fg:#1d1d1b; --mut:#6b6b66; --line:#dcdcd6; --acc:#2d6cdf; --ok:#1f8a4c; --warn:#b26a00; --bad:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --card:#201f1e; --fg:#ecebe6; --mut:#9a9992; --line:#35342f; --acc:#6b9bff; --ok:#4cc27f; --warn:#e0a43c; --bad:#ef7566; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,sans-serif; padding:16px; }
+  main { max-width:760px; margin:0 auto; display:grid; gap:14px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+  label { display:grid; gap:4px; font-size:12px; color:var(--mut); flex:1 1 150px; }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  button { cursor:pointer; background:var(--acc); color:#fff; border-color:transparent; }
+  button.ghost { background:transparent; color:var(--fg); border-color:var(--line); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; }
+  .badge { font-size:12px; padding:3px 9px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
+  .badge.on { color:var(--ok); border-color:var(--ok); } .badge.off { color:var(--bad); border-color:var(--bad); }
+  .item { display:grid; grid-template-columns:1fr auto; gap:4px 10px; padding:10px 0; border-top:1px solid var(--line); }
+  .item:first-child { border-top:0; }
+  .when { font-weight:600; } .what { color:var(--mut); font-size:13px; }
+  .chip { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
+  .chip.sched { color:var(--acc); } .chip.done { color:var(--ok); } .chip.late { color:var(--warn); }
+  .empty { color:var(--mut); padding:6px 0; }
+  details summary { cursor:pointer; color:var(--mut); }
+  #vol-out { font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>Sound Scheduler</h1>
+    <div class="badges">
+      <span id="b-conn" class="badge off">broker: disconnected</span>
+      <span id="b-dev" class="badge">device: unknown</span>
+    </div>
+  </div>
+
+  <details class="card" id="conn-card" open>
+    <summary>Connection (saved in this browser only)</summary>
+    <div class="row" style="margin-top:10px">
+      <label>HiveMQ host<input id="c-host" placeholder="xxxx.s1.eu.hivemq.cloud"></label>
+      <label>Username<input id="c-user" autocomplete="username"></label>
+      <label>Password<input id="c-pass" type="password" autocomplete="current-password"></label>
+      <button id="c-go">Connect</button>
+    </div>
+  </details>
+
+  <section class="card">
+    <h2>New request</h2>
+    <div class="row">
+      <label>Function
+        <select id="f-fn">
+          <option value="track">Play sound</option>
+          <option value="folder">Play folder (series)</option>
+        </select>
+      </label>
+      <label>Sound / folder<select id="f-target"></select></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Volume: <span id="vol-out">20</span> / 30
+        <input id="f-vol" type="range" min="1" max="30" value="20">
+      </label>
+      <label>Schedule time<input id="f-at" type="datetime-local"></label>
+      <button id="f-now" class="ghost" type="button">Now</button>
+      <button id="f-add" disabled>Add to queue</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="top" style="margin-bottom:6px">
+      <h2 style="margin:0">Queue</h2>
+      <button id="q-clear" class="ghost">Remove played</button>
+    </div>
+    <div id="q-list"></div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+// ============ EDIT THESE: what's on the SD card ============
+// Single sounds live in /MP3/0001.mp3, 0002.mp3 ...  -> n is the file number
+const TRACKS  = [ {n:1,name:"Sound 1"}, {n:2,name:"Sound 2"}, {n:3,name:"Sound 3"} ];
+// Folders live in /01, /02 ... and play every file inside in order -> n is the folder number
+const FOLDERS = [ {n:1,name:"Series 1"}, {n:2,name:"Series 2"} ];
+// ===========================================================
+
+const T_SCHED = "prank/schedule";   // website -> device (retained, whole list)
+const T_STATE = "prank/state";      // device -> website (retained)
+
+let client = null, items = [], done = {}, loaded = false, dev = { online:null, now:0 };
+const $ = id => document.getElementById(id);
+
+// ---------- connection ----------
+function load(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } }
+function save(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+
+function connect() {
+  const host = $("c-host").value.trim(), user = $("c-user").value.trim(), pass = $("c-pass").value;
+  if (!host || !user) return;
+  save("host",host); save("user",user); save("pass",pass);
+  if (client) client.end(true);
+  loaded = false; setConn("connecting…", false);
+  client = mqtt.connect("wss://" + host + ":8884/mqtt", {
+    username:user, password:pass, clientId:"web-" + Math.random().toString(16).slice(2,10),
+    reconnectPeriod:3000, connectTimeout:8000, clean:true
+  });
+  client.on("connect", () => {
+    setConn("broker: connected", true);
+    client.subscribe([T_SCHED, T_STATE], { qos:1 });
+    setTimeout(() => { loaded = true; render(); }, 2500);   // no retained schedule yet = empty list
+  });
+  client.on("close",   () => { setConn("broker: disconnected", false); render(); });
+  client.on("error",   e => setConn("error: " + (e.message || e), false));
+  client.on("message", (topic, buf) => {
+    let d; try { d = JSON.parse(buf.toString()); } catch(e) { return; }
+    if (topic === T_SCHED && Array.isArray(d.items)) { items = d.items; loaded = true; }
+    if (topic === T_STATE) {
+      dev = { online: !!d.online, now: d.now || 0 };
+      done = {}; (d.done || []).forEach(x => { done[x.id] = x.t; });
+    }
+    render();
+  });
+}
+function setConn(t, ok){ const b = $("b-conn"); b.textContent = t; b.className = "badge " + (ok ? "on" : "off"); }
+
+function publish() {
+  if (!client || !client.connected) return;
+  client.publish(T_SCHED, JSON.stringify({ v:1, items }), { qos:1, retain:true });
+}
+
+// ---------- form ----------
+function fillTargets() {
+  const list = $("f-fn").value === "track" ? TRACKS : FOLDERS;
+  $("f-target").innerHTML = "";
+  list.forEach(x => { const o = document.createElement("option"); o.value = x.n; o.textContent = x.name; $("f-target").appendChild(o); });
+}
+function toLocalInput(d) {
+  const p = n => String(n).padStart(2,"0");
+  return d.getFullYear() + "-" + p(d.getMonth()+1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function setNow(offsetMin){ $("f-at").value = toLocalInput(new Date(Date.now() + offsetMin*60000)); }
+
+function addItem() {
+  const at = Math.floor(new Date($("f-at").value).getTime() / 1000);
+  if (!at || !$("f-target").value) return;
+  items.push({
+    id: Math.random().toString(36).slice(2,8),
+    fn: $("f-fn").value,
+    target: parseInt($("f-target").value, 10),
+    vol: parseInt($("f-vol").value, 10),
+    at
+  });
+  publish(); render();
+}
+
+// ---------- queue ----------
+function nameOf(it) {
+  const list = it.fn === "track" ? TRACKS : FOLDERS;
+  const hit = list.find(x => x.n === it.target);
+  return (it.fn === "track" ? "Sound: " : "Folder: ") + (hit ? hit.name : "#" + it.target);
+}
+function render() {
+  $("f-add").disabled = !(client && client.connected && loaded);
+  const b = $("b-dev");
+  if (dev.online === null) { b.textContent = "device: unknown"; b.className = "badge"; }
+  else if (dev.online) { b.textContent = "device: online"; b.className = "badge on"; }
+  else { b.textContent = "device: offline"; b.className = "badge off"; }
+
+  const box = $("q-list"); box.innerHTML = "";
+  if (!items.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = loaded ? "Nothing queued." : "Waiting for queue…"; box.appendChild(e); return; }
+  const nowS = Date.now() / 1000;
+  [...items].sort((a,b) => a.at - b.at).forEach(it => {
+    const row = document.createElement("div"); row.className = "item";
+    const l = document.createElement("div");
+    const w = document.createElement("div"); w.className = "when"; w.textContent = new Date(it.at*1000).toLocaleString();
+    const s = document.createElement("div"); s.className = "what"; s.textContent = nameOf(it) + "  ·  vol " + it.vol;
+    l.append(w, s);
+    const r = document.createElement("div"); r.className = "row"; r.style.alignItems = "center";
+    const c = document.createElement("span"); c.className = "chip";
+    if (done[it.id]) { c.classList.add("done"); c.textContent = "played " + new Date(done[it.id]*1000).toLocaleTimeString(); }
+    else if (it.at < nowS) { c.classList.add("late"); c.textContent = "waiting on device"; }
+    else { c.classList.add("sched"); c.textContent = "scheduled"; }
+    const del = document.createElement("button"); del.className = "ghost"; del.textContent = "✕"; del.title = "Remove";
+    del.onclick = () => { items = items.filter(x => x.id !== it.id); publish(); render(); };
+    r.append(c, del);
+    row.append(l, r); box.appendChild(row);
+  });
+}
+
+// ---------- wire up ----------
+$("f-fn").onchange = fillTargets;
+$("f-vol").oninput = e => { $("vol-out").textContent = e.target.value; };
+$("f-now").onclick = () => setNow(0);
+$("f-add").onclick = addItem;
+$("c-go").onclick = connect;
+$("q-clear").onclick = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
+
+$("c-host").value = load("host"); $("c-user").value = load("user"); $("c-pass").value = load("pass");
+fillTargets(); setNow(5); render();
+if ($("c-host").value && $("c-user").value) { $("conn-card").open = false; connect(); }
+setInterval(render, 30000);
+</script>
+</body>
+</html>
