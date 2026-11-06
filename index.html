@@ -64,7 +64,7 @@
         </select>
       </label>
       <label>Sound / folder number
-        <input id="f-target" type="number" min="1" step="1" placeholder="Enter number">
+        <input id="f-target" type="number" min="0" step="1" placeholder="Enter number">
       </label>
     </div>
     <div class="row" style="margin-top:10px">
@@ -148,19 +148,22 @@ function setNow(offsetMin){ $("f-at").value = toLocalInput(new Date(Date.now() +
 
 function addItem() {
   const at = Math.floor(new Date($("f-at").value).getTime() / 1000);
-  const target = parseInt($("f-target").value, 10);
+  const target = Number($("f-target").value);
+  const vol = Number($("f-vol").value);
 
-  if (!at || !Number.isInteger(target) || target < 1) return;
+  if (!at || !Number.isInteger(target) || target < 1) {
+    alert("Please enter a valid sound or folder number.");
+    return;
+  }
 
   items.push({
     id: Math.random().toString(36).slice(2,8),
     fn: $("f-fn").value,
     target: target,
-    vol: parseInt($("f-vol").value, 10),
-    at
+    vol: vol,
+    at: at
   });
 
-  $("f-target").value = "";
   publish();
   render();
 }
