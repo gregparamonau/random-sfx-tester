@@ -47,7 +47,7 @@
   <details class="card" id="conn-card" open>
     <summary>Connection (saved in this browser only)</summary>
     <div class="row" style="margin-top:10px">
-      <label>HiveMQ host<input id="c-host" placeholder="xxxx.s1.eu.hivemq.cloud"></label>
+      <label>EMQX host<input id="c-host" placeholder="n16a90c6.ala.us-east-1.emqxsl.com"></label>
       <label>Username<input id="c-user" autocomplete="username"></label>
       <label>Password<input id="c-pass" type="password" autocomplete="current-password"></label>
       <button id="c-go">Connect</button>
@@ -109,7 +109,7 @@ function connect() {
   save("host",host); save("user",user); save("pass",pass);
   if (client) client.end(true);
   loaded = false; setConn("connecting…", false);
-  client = mqtt.connect("wss://" + host + ":8884/mqtt", {
+  client = mqtt.connect("wss://" + host + ":8084/mqtt", {
     username:user, password:pass, clientId:"web-" + Math.random().toString(16).slice(2,10),
     reconnectPeriod:3000, connectTimeout:8000, clean:true
   });
@@ -204,7 +204,7 @@ $("f-add").onclick = addItem;
 $("c-go").onclick = connect;
 $("q-clear").onclick = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
 
-$("c-host").value = load("host"); $("c-user").value = load("user"); $("c-pass").value = load("pass");
+$("c-host").value = load("host") || "n16a90c6.ala.us-east-1.emqxsl.com"; $("c-user").value = load("user"); $("c-pass").value = load("pass");
 fillTargets(); setNow(5); render();
 if ($("c-host").value && $("c-user").value) { $("conn-card").open = false; connect(); }
 setInterval(render, 30000);
