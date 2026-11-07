@@ -75,6 +75,7 @@
       <label>Schedule time<input id="f-at" type="datetime-local"></label>
       <button id="f-now" class="ghost" type="button">Now</button>
       <button id="f-add" disabled>Add to queue</button>
+      <button id="f-addnow" disabled>Add &amp; play now</button>
     </div>
   </section>
 
@@ -165,8 +166,9 @@ function toLocalInput(d) {
 }
 function setNow(offsetMin){ $("f-at").value = toLocalInput(new Date(Date.now() + offsetMin*60000)); }
 
-function addItem() {
-  const at = Math.floor(new Date($("f-at").value).getTime() / 1000);
+// atOverride: a Unix time in seconds; if not given, the time picker is used
+function addItem(atOverride) {
+  const at = atOverride || Math.floor(new Date($("f-at").value).getTime() / 1000);
   const target = Number($("f-target").value);
   const vol = Number($("f-vol").value);
 
@@ -195,9 +197,10 @@ function nameOf(it) {
 }
 function render() {
   const connected = !!(client && client.connected);
-  $("f-add").disabled  = !(connected && loaded);
-  $("q-stop").disabled = !connected;
-  $("q-all").disabled  = !(connected && loaded && items.length);
+  $("f-add").disabled    = !(connected && loaded);
+  $("f-addnow").disabled = $("f-add").disabled;
+  $("q-stop").disabled   = !connected;
+  $("q-all").disabled    = !(connected && loaded && items.length);
 
   const b = $("b-dev");
   if (dev.online === null) { b.textContent = "device: unknown"; b.className = "badge"; }
@@ -227,12 +230,13 @@ function render() {
 
 // ---------- wire up ----------
 $("f-vol").oninput = e => { $("vol-out").textContent = e.target.value; };
-$("f-now").onclick = () => setNow(0);
-$("f-add").onclick = addItem;
-$("c-go").onclick = connect;
-$("q-stop").onclick = sendStop;
-$("q-all").onclick = clearQueue;
-$("q-clear").onclick = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
+$("f-now").onclick    = () => setNow(0);
+$("f-add").onclick    = () => addItem();                               // uses the time picker
+$("f-addnow").onclick = () => addItem(Math.floor(Date.now() / 1000));  // uses right now
+$("c-go").onclick     = connect;
+$("q-stop").onclick   = sendStop;
+$("q-all").onclick    = clearQueue;
+$("q-clear").onclick  = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
 
 $("c-host").value = load("host") || "n16a90c6.ala.us-east-1.emqxsl.com"; $("c-user").value = load("user"); $("c-pass").value = load("pass");
 setNow(5); render();
