@@ -19,6 +19,7 @@
   input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
   button { cursor:pointer; background:var(--acc); color:#fff; border-color:transparent; }
   button.ghost { background:transparent; color:var(--fg); border-color:var(--line); }
+  button.danger { background:var(--bad); color:#fff; border-color:transparent; }
   button:disabled { opacity:.45; cursor:not-allowed; }
   .top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
   .badges { display:flex; gap:8px; flex-wrap:wrap; }
@@ -80,7 +81,11 @@
   <section class="card">
     <div class="top" style="margin-bottom:6px">
       <h2 style="margin:0">Queue</h2>
-      <button id="q-clear" class="ghost">Remove played</button>
+      <div class="row" style="align-items:center">
+        <button id="q-stop" class="danger" disabled title="Stop whatever is playing right now">Stop now</button>
+        <button id="q-clear" class="ghost">Remove played</button>
+        <button id="q-all" class="ghost" disabled title="Remove every item from the queue">Clear queue</button>
+      </div>
     </div>
     <div id="q-list"></div>
   </section>
@@ -95,10 +100,10 @@ const TRACKS  = [ {n:1,name:"Sound 1"}, {n:2,name:"Sound 2"}, {n:3,name:"Sound 3
 const FOLDERS = [ {n:1,name:"Series 1"}, {n:2,name:"Series 2"} ];
 // ===========================================================
 
-const T_SCHED = "prank/schedule";   // website -> device (retained, whole list)
+const T_SCHED = "prank/schedule";   // website -> device (retained, whole list; also non-retained commands)
 const T_STATE = "prank/state";      // device -> website (retained)
 
-let client = null, items = [], done = {}, loaded = false, dev = { online:null, now:0 };
+let client = null, items = [], done = {}, loaded = false, dev = { online:null, now:0, status:"" };
 const $ = id => document.getElementById(id);
 
 // ---------- connection ----------
@@ -126,7 +131,7 @@ function connect() {
     let d; try { d = JSON.parse(buf.toString()); } catch(e) { return; }
     if (topic === T_SCHED && Array.isArray(d.items)) { items = d.items; loaded = true; }
     if (topic === T_STATE) {
-      dev = { online: !!d.online, now: d.now || 0 };
+      dev = { online: !!d.online, now: d.now || 0, status: d.status || "" };
       done = {}; (d.done || []).forEach(x => { done[x.id] = x.t; });
     }
     render();
@@ -137,6 +142,20 @@ function setConn(t, ok){ const b = $("b-conn"); b.textContent = t; b.className =
 function publish() {
   if (!client || !client.connected) return;
   client.publish(T_SCHED, JSON.stringify({ v:1, items }), { qos:1, retain:true });
+}
+
+// ---------- stop / clear ----------
+function sendStop() {
+  if (!client || !client.connected) return;
+  // Not retained: stops the current sound without replacing the stored schedule
+  client.publish(T_SCHED, JSON.stringify({ cmd:"stop" }), { qos:1, retain:false });
+}
+function clearQueue() {
+  if (!items.length) return;
+  if (!confirm("Remove every item from the queue?")) return;
+  items = [];
+  publish();
+  render();
 }
 
 // ---------- form ----------
@@ -175,10 +194,14 @@ function nameOf(it) {
   return (it.fn === "track" ? "Sound: " : "Folder: ") + (hit ? hit.name : "#" + it.target);
 }
 function render() {
-  $("f-add").disabled = !(client && client.connected && loaded);
+  const connected = !!(client && client.connected);
+  $("f-add").disabled  = !(connected && loaded);
+  $("q-stop").disabled = !connected;
+  $("q-all").disabled  = !(connected && loaded && items.length);
+
   const b = $("b-dev");
   if (dev.online === null) { b.textContent = "device: unknown"; b.className = "badge"; }
-  else if (dev.online) { b.textContent = "device: online"; b.className = "badge on"; }
+  else if (dev.online) { b.textContent = "device: online" + (dev.status ? " · " + dev.status : ""); b.className = "badge on"; }
   else { b.textContent = "device: offline"; b.className = "badge off"; }
 
   const box = $("q-list"); box.innerHTML = "";
@@ -207,6 +230,8 @@ $("f-vol").oninput = e => { $("vol-out").textContent = e.target.value; };
 $("f-now").onclick = () => setNow(0);
 $("f-add").onclick = addItem;
 $("c-go").onclick = connect;
+$("q-stop").onclick = sendStop;
+$("q-all").onclick = clearQueue;
 $("q-clear").onclick = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
 
 $("c-host").value = load("host") || "n16a90c6.ala.us-east-1.emqxsl.com"; $("c-user").value = load("user"); $("c-pass").value = load("pass");
