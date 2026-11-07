@@ -17,6 +17,7 @@
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
   label { display:grid; gap:4px; font-size:12px; color:var(--mut); flex:1 1 150px; }
   input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  input:disabled { opacity:.45; }
   button { cursor:pointer; background:var(--acc); color:#fff; border-color:transparent; }
   button.ghost { background:transparent; color:var(--fg); border-color:var(--line); }
   button.danger { background:var(--bad); color:#fff; border-color:transparent; }
@@ -25,12 +26,15 @@
   .badges { display:flex; gap:8px; flex-wrap:wrap; }
   .badge { font-size:12px; padding:3px 9px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
   .badge.on { color:var(--ok); border-color:var(--ok); } .badge.off { color:var(--bad); border-color:var(--bad); }
+  .sub { font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); margin:12px 0 2px; }
+  .sub:first-child { margin-top:0; }
   .item { display:grid; grid-template-columns:1fr auto; gap:4px 10px; padding:10px 0; border-top:1px solid var(--line); }
-  .item:first-child { border-top:0; }
+  .sub + .item { border-top:0; }
   .when { font-weight:600; } .what { color:var(--mut); font-size:13px; }
   .chip { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
-  .chip.sched { color:var(--acc); } .chip.done { color:var(--ok); } .chip.late { color:var(--warn); }
+  .chip.sched { color:var(--acc); } .chip.done { color:var(--ok); } .chip.late { color:var(--warn); } .chip.now { color:var(--bad); }
   .empty { color:var(--mut); padding:6px 0; }
+  .hint { font-size:12px; color:var(--mut); margin-top:8px; }
   details summary { cursor:pointer; color:var(--mut); }
   #vol-out { font-variant-numeric:tabular-nums; }
 </style>
@@ -58,6 +62,12 @@
   <section class="card">
     <h2>New request</h2>
     <div class="row">
+      <label>Mode
+        <select id="f-mode">
+          <option value="sched">Schedule at a time</option>
+          <option value="queue">Queue (play in order)</option>
+        </select>
+      </label>
       <label>Function
         <select id="f-fn">
           <option value="track">Play sound</option>
@@ -74,8 +84,10 @@
       </label>
       <label>Schedule time<input id="f-at" type="datetime-local"></label>
       <button id="f-now" class="ghost" type="button">Now</button>
-      <button id="f-add" disabled>Add to queue</button>
+      <button id="f-add" disabled>Add to schedule</button>
+      <button id="f-addnow" disabled title="Schedule for right now - plays before anything queued">Play now (priority)</button>
     </div>
+    <div class="hint" id="f-hint"></div>
   </section>
 
   <section class="card">
@@ -84,7 +96,7 @@
       <div class="row" style="align-items:center">
         <button id="q-stop" class="danger" disabled title="Stop whatever is playing right now">Stop now</button>
         <button id="q-clear" class="ghost">Remove played</button>
-        <button id="q-all" class="ghost" disabled title="Remove every item from the queue">Clear queue</button>
+        <button id="q-all" class="ghost" disabled title="Remove every item">Clear queue</button>
       </div>
     </div>
     <div id="q-list"></div>
@@ -100,10 +112,10 @@ const TRACKS  = [ {n:1,name:"Sound 1"}, {n:2,name:"Sound 2"}, {n:3,name:"Sound 3
 const FOLDERS = [ {n:1,name:"Series 1"}, {n:2,name:"Series 2"} ];
 // ===========================================================
 
-const T_SCHED = "prank/schedule";   // website -> device (retained, whole list; also non-retained commands)
+const T_SCHED = "prank/schedule";   // website -> device (retained list; also non-retained commands)
 const T_STATE = "prank/state";      // device -> website (retained)
 
-let client = null, items = [], done = {}, loaded = false, dev = { online:null, now:0, status:"" };
+let client = null, items = [], done = {}, loaded = false, dev = { online:null, now:0, status:"", current:"" };
 const $ = id => document.getElementById(id);
 
 // ---------- connection ----------
@@ -123,7 +135,7 @@ function connect() {
   client.on("connect", () => {
     setConn("broker: connected", true);
     client.subscribe([T_SCHED, T_STATE], { qos:1 });
-    setTimeout(() => { loaded = true; render(); }, 2500);   // no retained schedule yet = empty list
+    setTimeout(() => { loaded = true; render(); }, 2500);   // no retained list yet = empty
   });
   client.on("close",   () => { setConn("broker: disconnected", false); render(); });
   client.on("error",   e => setConn("error: " + (e.message || e), false));
@@ -131,7 +143,7 @@ function connect() {
     let d; try { d = JSON.parse(buf.toString()); } catch(e) { return; }
     if (topic === T_SCHED && Array.isArray(d.items)) { items = d.items; loaded = true; }
     if (topic === T_STATE) {
-      dev = { online: !!d.online, now: d.now || 0, status: d.status || "" };
+      dev = { online: !!d.online, now: d.now || 0, status: d.status || "", current: d.current || "" };
       done = {}; (d.done || []).forEach(x => { done[x.id] = x.t; });
     }
     render();
@@ -147,12 +159,12 @@ function publish() {
 // ---------- stop / clear ----------
 function sendStop() {
   if (!client || !client.connected) return;
-  // Not retained: stops the current sound without replacing the stored schedule
+  // Not retained: stops the current sound without replacing the stored list
   client.publish(T_SCHED, JSON.stringify({ cmd:"stop" }), { qos:1, retain:false });
 }
 function clearQueue() {
   if (!items.length) return;
-  if (!confirm("Remove every item from the queue?")) return;
+  if (!confirm("Remove every scheduled and queued item?")) return;
   items = [];
   publish();
   render();
@@ -165,8 +177,22 @@ function toLocalInput(d) {
 }
 function setNow(offsetMin){ $("f-at").value = toLocalInput(new Date(Date.now() + offsetMin*60000)); }
 
-function addItem() {
-  const at = Math.floor(new Date($("f-at").value).getTime() / 1000);
+function updateMode() {
+  const queue = $("f-mode").value === "queue";
+  $("f-at").disabled  = queue;
+  $("f-now").disabled = queue;
+  $("f-add").textContent = queue ? "Add to queue" : "Add to schedule";
+  $("f-hint").textContent = queue
+    ? "Queued items play one after another, in the order added, whenever no scheduled item is due."
+    : "Scheduled items play at their time, ahead of anything queued.";
+}
+
+// atOverride: a Unix time in seconds ("Play now"); otherwise the mode decides
+function addItem(atOverride) {
+  const queued = !atOverride && $("f-mode").value === "queue";
+  const at = atOverride
+    || (queued ? Math.floor(Date.now() / 1000)                              // queue: time added (sets the order)
+               : Math.floor(new Date($("f-at").value).getTime() / 1000));   // schedule: chosen time
   const target = Number($("f-target").value);
   const vol = Number($("f-vol").value);
 
@@ -175,29 +201,46 @@ function addItem() {
     return;
   }
 
-  items.push({
-    id: Math.random().toString(36).slice(2,8),
-    fn: $("f-fn").value,
-    target: target,
-    vol: vol,
-    at: at
-  });
+  const it = { id: Math.random().toString(36).slice(2,8), fn: $("f-fn").value, target, vol, at };
+  if (queued) it.q = 1;
+  items.push(it);
 
   publish();
   render();
 }
 
-// ---------- queue ----------
+// ---------- list ----------
 function nameOf(it) {
   const list = it.fn === "track" ? TRACKS : FOLDERS;
   const hit = list.find(x => x.n === it.target);
   return (it.fn === "track" ? "Sound: " : "Folder: ") + (hit ? hit.name : "#" + it.target);
 }
+function isPlaying(it) { return dev.online && dev.status === "playing" && dev.current === it.id; }
+
+function makeRow(it, whenText, chipClass, chipText) {
+  const row = document.createElement("div"); row.className = "item";
+  const l = document.createElement("div");
+  const w = document.createElement("div"); w.className = "when"; w.textContent = whenText;
+  const s = document.createElement("div"); s.className = "what"; s.textContent = nameOf(it) + "  ·  vol " + it.vol;
+  l.append(w, s);
+  const r = document.createElement("div"); r.className = "row"; r.style.alignItems = "center";
+  const c = document.createElement("span"); c.className = "chip " + chipClass; c.textContent = chipText;
+  const del = document.createElement("button"); del.className = "ghost"; del.textContent = "✕"; del.title = "Remove";
+  del.onclick = () => { items = items.filter(x => x.id !== it.id); publish(); render(); };
+  r.append(c, del);
+  row.append(l, r);
+  return row;
+}
+function addHeading(box, text) {
+  const h = document.createElement("div"); h.className = "sub"; h.textContent = text; box.appendChild(h);
+}
+
 function render() {
   const connected = !!(client && client.connected);
-  $("f-add").disabled  = !(connected && loaded);
-  $("q-stop").disabled = !connected;
-  $("q-all").disabled  = !(connected && loaded && items.length);
+  $("f-add").disabled    = !(connected && loaded);
+  $("f-addnow").disabled = $("f-add").disabled;
+  $("q-stop").disabled   = !connected;
+  $("q-all").disabled    = !(connected && loaded && items.length);
 
   const b = $("b-dev");
   if (dev.online === null) { b.textContent = "device: unknown"; b.className = "badge"; }
@@ -205,37 +248,55 @@ function render() {
   else { b.textContent = "device: offline"; b.className = "badge off"; }
 
   const box = $("q-list"); box.innerHTML = "";
-  if (!items.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = loaded ? "Nothing queued." : "Waiting for queue…"; box.appendChild(e); return; }
+  if (!items.length) {
+    const e = document.createElement("div"); e.className = "empty";
+    e.textContent = loaded ? "Nothing scheduled or queued." : "Waiting for queue…";
+    box.appendChild(e); return;
+  }
   const nowS = Date.now() / 1000;
-  [...items].sort((a,b) => a.at - b.at).forEach(it => {
-    const row = document.createElement("div"); row.className = "item";
-    const l = document.createElement("div");
-    const w = document.createElement("div"); w.className = "when"; w.textContent = new Date(it.at*1000).toLocaleString();
-    const s = document.createElement("div"); s.className = "what"; s.textContent = nameOf(it) + "  ·  vol " + it.vol;
-    l.append(w, s);
-    const r = document.createElement("div"); r.className = "row"; r.style.alignItems = "center";
-    const c = document.createElement("span"); c.className = "chip";
-    if (done[it.id]) { c.classList.add("done"); c.textContent = "played " + new Date(done[it.id]*1000).toLocaleTimeString(); }
-    else if (it.at < nowS) { c.classList.add("late"); c.textContent = "waiting on device"; }
-    else { c.classList.add("sched"); c.textContent = "scheduled"; }
-    const del = document.createElement("button"); del.className = "ghost"; del.textContent = "✕"; del.title = "Remove";
-    del.onclick = () => { items = items.filter(x => x.id !== it.id); publish(); render(); };
-    r.append(c, del);
-    row.append(l, r); box.appendChild(row);
-  });
+
+  // Scheduled items, by time
+  const sched = items.filter(it => !it.q).sort((a,b) => a.at - b.at);
+  if (sched.length) {
+    addHeading(box, "Scheduled");
+    sched.forEach(it => {
+      let cls, txt;
+      if (isPlaying(it))     { cls = "now";   txt = "playing now"; }
+      else if (done[it.id])  { cls = "done";  txt = "played " + new Date(done[it.id]*1000).toLocaleTimeString(); }
+      else if (it.at < nowS) { cls = "late";  txt = "waiting on device"; }
+      else                   { cls = "sched"; txt = "scheduled"; }
+      box.appendChild(makeRow(it, new Date(it.at*1000).toLocaleString(), cls, txt));
+    });
+  }
+
+  // Queued items, in the order added
+  const queue = items.filter(it => it.q).sort((a,b) => a.at - b.at);
+  if (queue.length) {
+    addHeading(box, "Queue (plays in order)");
+    let pos = 0;
+    queue.forEach(it => {
+      let cls, txt;
+      if (isPlaying(it))    { cls = "now";   txt = "playing now"; }
+      else if (done[it.id]) { cls = "done";  txt = "played " + new Date(done[it.id]*1000).toLocaleTimeString(); }
+      else                  { pos++; cls = "sched"; txt = pos === 1 ? "up next" : "#" + pos + " in line"; }
+      box.appendChild(makeRow(it, "Queued " + new Date(it.at*1000).toLocaleTimeString(), cls, txt));
+    });
+  }
 }
 
 // ---------- wire up ----------
-$("f-vol").oninput = e => { $("vol-out").textContent = e.target.value; };
-$("f-now").onclick = () => setNow(0);
-$("f-add").onclick = addItem;
-$("c-go").onclick = connect;
-$("q-stop").onclick = sendStop;
-$("q-all").onclick = clearQueue;
-$("q-clear").onclick = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
+$("f-vol").oninput    = e => { $("vol-out").textContent = e.target.value; };
+$("f-mode").onchange  = updateMode;
+$("f-now").onclick    = () => setNow(0);
+$("f-add").onclick    = () => addItem();                               // schedule or queue, per mode
+$("f-addnow").onclick = () => addItem(Math.floor(Date.now() / 1000));  // scheduled for right now
+$("c-go").onclick     = connect;
+$("q-stop").onclick   = sendStop;
+$("q-all").onclick    = clearQueue;
+$("q-clear").onclick  = () => { items = items.filter(x => !done[x.id]); publish(); render(); };
 
 $("c-host").value = load("host") || "n16a90c6.ala.us-east-1.emqxsl.com"; $("c-user").value = load("user"); $("c-pass").value = load("pass");
-setNow(5); render();
+setNow(5); updateMode(); render();
 if ($("c-host").value && $("c-user").value) { $("conn-card").open = false; connect(); }
 setInterval(render, 30000);
 </script>
