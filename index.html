@@ -139,34 +139,49 @@ function load(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return
 function save(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
 
 function connect() {
-  const host = $("c-host").value.trim(), user = $("c-user").value.trim(), pass = $("c-pass").value;
+  const host = $("c-host").value.trim(), user = $("c-user").value.trim(), pass = $("c-pass").value.trim();
   if (!host || !user) return;
-  save("host",host); save("user",user); save("pass",pass);
+  save("host", host); save("user", user); save("pass", pass);
   if (client) client.end(true);
   loaded = false; setConn("connecting…", false);
+
+  let lastErr = "";
   client = mqtt.connect("wss://" + host + ":8084/mqtt", {
-    username:user, password:pass, clientId:"web-" + Math.random().toString(16).slice(2,10),
-    reconnectPeriod:3000, connectTimeout:8000, clean:true
+    username: user, password: pass, clientId: "web-" + Math.random().toString(16).slice(2, 10),
+    reconnectPeriod: 3000, connectTimeout: 8000, clean: true
   });
+
   client.on("connect", () => {
+    lastErr = "";
     setConn("broker: connected", true);
-    client.subscribe([T_SCHED, T_STATE], { qos:1 });
+    client.subscribe([T_SCHED, T_STATE], { qos: 1 });
     setTimeout(() => { loaded = true; render(); }, 2500);   // no retained list yet = empty
   });
-  client.on("close",   () => { setConn("broker: disconnected", false); render(); });
-  client.on("error",   e => setConn("error: " + (e.message || e), false));
+
+  client.on("close", () => {
+    if (!lastErr) setConn("broker: disconnected", false);   // don't overwrite a real error message
+    render();
+  });
+
+  client.on("error", e => {
+    lastErr = e.message || String(e);
+    setConn("error: " + lastErr, false);
+    // bad credentials / not authorized: stop retrying so the message stays visible
+    if (e.code === 4 || e.code === 5 || /refused|authorized/i.test(lastErr)) client.end(true);
+  });
+
   client.on("message", (topic, buf) => {
-    let d; try { d = JSON.parse(buf.toString()); } catch(e) { return; }
+    let d; try { d = JSON.parse(buf.toString()); } catch (e) { return; }
     if (topic === T_SCHED && Array.isArray(d.items)) { items = d.items; loaded = true; }
     if (topic === T_STATE) {
       if (d.online) {
-        dev = { online:true, now:d.now || 0, status:d.status || "", current:d.current || "",
-                fn:d.fn || "track", target:(d.target ?? -1), lastReboot:d.lastReboot || "" };
+        dev = { online: true, now: d.now || 0, status: d.status || "", current: d.current || "",
+                fn: d.fn || "track", target: (d.target ?? -1), lastReboot: d.lastReboot || "" };
         done = {};
-        (d.done || []).forEach(x => { done[x.id] = { t:x.t, f:x.f || x.t, r:(x.r ?? R_DONE) }; });
+        (d.done || []).forEach(x => { done[x.id] = { t: x.t, f: x.f || x.t, r: (x.r ?? R_DONE) }; });
       } else {
         // Offline message from the broker: keep the last known results, just mark the device offline
-        dev = { ...dev, online:false, status:"offline", current:"" };
+        dev = { ...dev, online: false, status: "offline", current: "" };
       }
     }
     render();
