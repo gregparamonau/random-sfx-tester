@@ -10,6 +10,7 @@
     :root { --bg:#161615; --card:#201f1e; --fg:#ecebe6; --mut:#9a9992; --line:#35342f; --acc:#6b9bff; --ok:#4cc27f; --warn:#e0a43c; --bad:#ef7566; }
   }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,sans-serif; padding:16px; }
   main { max-width:760px; margin:0 auto; display:grid; gap:14px; }
   h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
@@ -45,6 +46,13 @@
   .hint { font-size:12px; color:var(--mut); margin-top:8px; }
   details summary { cursor:pointer; color:var(--mut); }
   #vol-out { font-variant-numeric:tabular-nums; }
+  .lib-wrap { overflow-x:auto; }
+  table.lib { border-collapse:collapse; font-size:13px; min-width:100%; }
+  table.lib th, table.lib td { border:1px solid var(--line); padding:5px 8px; text-align:left; white-space:nowrap; }
+  table.lib thead th { background:var(--bg); }
+  table.lib th.idx { color:var(--mut); font-weight:400; text-align:right; background:var(--bg); position:sticky; left:0; }
+  table.lib td.blank { color:var(--mut); opacity:.5; }
+  .lib-note { font-size:12px; color:var(--mut); margin:8px 0 0; }
 </style>
 </head>
 <body>
@@ -66,6 +74,14 @@
       <button id="c-go">Connect</button>
     </div>
   </details>
+
+  <section class="card" id="lib-card" hidden>
+    <details open>
+      <summary>Sound library</summary>
+      <div class="lib-wrap" style="margin-top:10px"><table class="lib" id="lib-table"></table></div>
+      <p class="lib-note" id="lib-note"></p>
+    </details>
+  </section>
 
   <section class="card">
     <h2>New request</h2>
@@ -129,6 +145,40 @@ const T_STATE = "prank/state";      // device -> website (retained)
 
 // Result codes sent by the ESP32 for each item
 const R_PLAYING = 0, R_DONE = 1, R_FAIL = 2, R_STOP = 3, R_SKIP = 4;
+
+// ============ SOUND LIBRARY (shown only when connected) ============
+// One entry per series (column). sounds[i] is the sound at row number i; "" = empty slot.
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/16qOMrtq5MNcsuMMQU3yA8AP-uj7Ps0Pr2wWgHRFIJwo/edit?gid=0#gid=0"; // set to "" to hide the link
+const LIBRARY = [
+  { s:"00", name:"misc stupid", sounds:["DNE","boop","ohno","filet o fish","sad bombo","door creak","fat tuba","children yay","sorry i farted","faaaa","sad trombone","minecraft villager","mi bombo","ab laugh","ab pig taunt","op gangnam","hello john cena","","ayy gangnam","","boing boing boing"] },
+  { s:"01", name:"realistic noises", sounds:["mosquito","water drop (long)","metal pipe","soda can","water drip short"] },
+  { s:"02", name:"songs", sounds:["peng you ahh","scotland bagpipe","father stretch my hands pt 1"] },
+  { s:"03", name:"movies", sounds:["shrek 1 movie","shrek 2 movie"] },
+  { s:"04", name:"greg+jason (premium sfx)", sounds:["what you want"] }
+];
+
+function buildLibrary() {
+  const t = $("lib-table"); t.innerHTML = "";
+  const rows = Math.max(...LIBRARY.map(c => c.sounds.length));
+  const head = t.createTHead().insertRow();
+  const corner = document.createElement("th"); corner.className = "idx"; corner.textContent = "#"; head.appendChild(corner);
+  LIBRARY.forEach(c => { const th = document.createElement("th"); th.textContent = c.s + " · " + c.name; head.appendChild(th); });
+  const body = t.createTBody();
+  for (let i = 0; i < rows; i++) {
+    const tr = body.insertRow();
+    const idx = document.createElement("th"); idx.className = "idx"; idx.textContent = String(i).padStart(2, "0"); tr.appendChild(idx);
+    LIBRARY.forEach(c => {
+      const td = tr.insertCell(); const v = c.sounds[i] || "";
+      td.textContent = v || "·"; if (!v) td.className = "blank";
+    });
+  }
+  const note = $("lib-note"); note.textContent = "";
+  if (SHEET_URL) {
+    const a = document.createElement("a");
+    a.href = SHEET_URL; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Open the full sheet";
+    note.appendChild(a);
+  }
+}
 
 let client = null, items = [], done = {}, loaded = false;
 let dev = { online:null, now:0, status:"", current:"", fn:"track", target:-1, lastReboot:"" };
@@ -311,6 +361,7 @@ function addHeading(box, text) {
 
 function render() {
   const connected = !!(client && client.connected);
+  $("lib-card").hidden   = !connected;
   $("f-add").disabled    = !(connected && loaded);
   $("f-addnow").disabled = $("f-add").disabled;
   $("q-stop").disabled   = !connected;
@@ -377,6 +428,7 @@ $("q-clear").onclick  = () => {
 };
 
 $("c-host").value = load("host") || "n16a90c6.ala.us-east-1.emqxsl.com"; $("c-user").value = load("user"); $("c-pass").value = load("pass");
+buildLibrary();
 setNow(5); updateMode(); render();
 if ($("c-host").value && $("c-user").value) { $("conn-card").open = false; connect(); }
 setInterval(render, 30000);
